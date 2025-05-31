@@ -1,14 +1,15 @@
-import Peer from 'simple-peer'
+// 📁 /src/infra/webrtc.js (VERSÃO NATIVA SEM SIMPLE-PEER)
 import { socketService } from './socket'
 
 class WebRTCService {
   constructor() {
-    this.peer = null
+    this.peerConnection = null
     this.localStream = null
     this.remoteStream = null
     this.isInitiator = false
     this.atendimentoId = null
     this.connectionTimeout = null
+    this.iceCandidates = []
     this.callbacks = {
       onLocalStream: null,
       onRemoteStream: null,
@@ -18,6 +19,7 @@ class WebRTCService {
       onProgress: null
     }
     
+    // Configuração dos servidores ICE
     this.iceServers = [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
@@ -41,7 +43,7 @@ class WebRTCService {
 
   verificarSuporteWebRTC() {
     const hasUserMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
-    const hasRTCPeerConnection = !!(window.RTCPeerConnection || window.webkitRTCPeerConnection || window.mozRTCPeerConnection)
+    const hasRTCPeerConnection = !!(window.RTCPeerConnection)
     
     return {
       supported: hasUserMedia && hasRTCPeerConnection,
@@ -152,10 +154,12 @@ class WebRTCService {
 
       this.reportarProgresso(iniciador ? 'Iniciando conexão...' : 'Aguardando conexão...')
 
+      // Timeout para conexão
       this.connectionTimeout = setTimeout(() => {
         this.handleConnectionTimeout()
       }, 15000)
 
+      // Configuração da conexão peer
       const config = {
         iceServers: this.iceServers,
         iceCandidatePoolSize: 10,
@@ -164,17 +168,25 @@ class WebRTCService {
         iceTransportPolicy: 'all'
       }
 
-      this.peer = new Peer({
-        initiator: iniciador,
-        stream: this.localStream,
-        trickle: false,
-        config: config,
-        channelConfig: {},
-        channelName: `channel-${atendimentoId}`
-      })
-
+      this.peerConnection = new RTCPeerConnection(config)
+      
+      // Configurar eventos
       this.configurarEventosPeer()
-      this.monitorarConexao()
+      
+      // Adicionar stream local
+      if (this.localStream) {
+        this.localStream.getTracks().forEach(track => {
+          this.peerConnection.addTrack(track, this.localStream)
+        })
+      }
+
+      // Se é iniciador, criar oferta
+      if (iniciador) {
+        await this.criarOferta()
+      }
+
+      // Escutar sinais do WebSocket
+      this.escutarSinais()
 
     } catch (error) {
       console.error('❌ Erro ao criar peer:', error)
@@ -185,124 +197,216 @@ class WebRTCService {
   }
 
   configurarEventosPeer() {
-    this.peer.on('signal', (data) => {
-      console.log('📡 Enviando sinal:', data.type)
-      this.reportarProgresso(`Enviando ${data.type}...`)
-      
-      socketService.emitirSinalWebRTC({
-        atendimentoId: this.atendimentoId,
-        signal: data,
-        tipo: data.type,
-        timestamp: Date.now()
-      })
+    // Receber ICE candidates
+    this.peerConnection.addEventListener('icecandidate', (event) => {
+      if (event.candidate) {
+        console.log('📡 Enviando ICE candidate')
+        this.enviarSinal('ice-candidate', event.candidate)
+      }
     })
 
-    this.peer.on('stream', (stream) => {
+    // Mudanças no estado da conexão ICE
+    this.peerConnection.addEventListener('iceconnectionstatechange', () => {
+      const state = this.peerConnection.iceConnectionState
+      console.log('🧊 ICE Connection State:', state)
+      
+      switch (state) {
+        case 'connected':
+        case 'completed':
+          this.clearConnectionTimeout()
+          this.reportarProgresso('Conectado com sucesso!')
+          if (this.callbacks.onConnect) {
+            this.callbacks.onConnect()
+          }
+          break
+        case 'failed':
+          this.handleConnectionFailure()
+          break
+        case 'disconnected':
+          this.reportarProgresso('Conexão perdida, tentando reconectar...')
+          break
+        case 'closed':
+          this.limparConexao()
+          if (this.callbacks.onClose) {
+            this.callbacks.onClose()
+          }
+          break
+      }
+    })
+
+    // Mudanças no estado da conexão geral
+    this.peerConnection.addEventListener('connectionstatechange', () => {
+      const state = this.peerConnection.connectionState
+      console.log('🔗 Connection State:', state)
+      
+      if (state === 'failed') {
+        this.handleConnectionFailure()
+      }
+    })
+
+    // Receber stream remoto
+    this.peerConnection.addEventListener('track', (event) => {
       console.log('📹 Stream remoto recebido')
+      this.remoteStream = event.streams[0]
       this.reportarProgresso('Vídeo conectado!')
       
-      this.remoteStream = stream
-      this.clearConnectionTimeout()
-      
       if (this.callbacks.onRemoteStream) {
-        this.callbacks.onRemoteStream(stream)
+        this.callbacks.onRemoteStream(this.remoteStream)
       }
     })
-
-    this.peer.on('connect', () => {
-      console.log('🔗 Conexão P2P estabelecida')
-      this.reportarProgresso('Conectado com sucesso!')
-      
-      this.clearConnectionTimeout()
-      
-      if (this.callbacks.onConnect) {
-        this.callbacks.onConnect()
-      }
-    })
-
-    this.peer.on('close', () => {
-      console.log('❌ Conexão fechada')
-      this.clearConnectionTimeout()
-      this.limparConexao()
-      if (this.callbacks.onClose) {
-        this.callbacks.onClose()
-      }
-    })
-
-    this.peer.on('error', (error) => {
-      console.error('❌ Erro no peer:', error)
-      this.clearConnectionTimeout()
-      
-      let mensagem = this.interpretarErro(error)
-      
-      if (this.callbacks.onError) {
-        this.callbacks.onError(mensagem)
-      }
-    })
-
-    this.escutarSinais()
   }
 
-  monitorarConexao() {
-    let checksConsecutivos = 0
-    
-    const interval = setInterval(() => {
-      if (!this.peer || !this.peer._pc) {
-        clearInterval(interval)
-        return
-      }
-
-      const pc = this.peer._pc
-      const connectionState = pc.connectionState
-      const iceConnectionState = pc.iceConnectionState
-      const iceGatheringState = pc.iceGatheringState
-
-      console.log('📊 Estado detalhado:', {
-        connection: connectionState,
-        ice: iceConnectionState,
-        gathering: iceGatheringState,
-        signaling: pc.signalingState
+  async criarOferta() {
+    try {
+      this.reportarProgresso('Criando oferta...')
+      const offer = await this.peerConnection.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true
       })
-
-      if (iceConnectionState === 'failed' || connectionState === 'failed') {
-        console.error('💥 Conexão falhou definitivamente')
-        clearInterval(interval)
-        this.handleConnectionFailure()
-        return
+      
+      await this.peerConnection.setLocalDescription(offer)
+      this.enviarSinal('offer', offer)
+      
+    } catch (error) {
+      console.error('❌ Erro ao criar oferta:', error)
+      if (this.callbacks.onError) {
+        this.callbacks.onError('Erro ao criar oferta: ' + error.message)
       }
-
-      if (iceConnectionState === 'disconnected') {
-        checksConsecutivos++
-        console.warn(`⚠️ Desconectado por ${checksConsecutivos} checks`)
-        
-        if (checksConsecutivos >= 3) {
-          console.error('💥 Muitos checks de desconexão')
-          clearInterval(interval)
-          this.handleConnectionFailure()
-          return
-        }
-      } else {
-        checksConsecutivos = 0
-      }
-
-      if (connectionState === 'connected' && iceConnectionState === 'connected') {
-        console.log('✅ Conexão totalmente estabelecida')
-        clearInterval(interval)
-      }
-
-    }, 2000)
+    }
   }
 
-  interpretarErro(error) {
-    const errorMap = {
-      'ERR_WEBRTC_SUPPORT': 'Navegador não suporta videochamadas',
-      'ERR_CONNECTION_FAILURE': 'Falha na conexão - verifique internet',
-      'ERR_SIGNALING': 'Erro de sinalização - servidor indisponível',
-      'ERR_ICE_CONNECTION_FAILURE': 'Bloqueio de firewall detectado',
-      'ERR_DATA_CHANNEL': 'Canal de dados falhou'
+  async criarResposta(offer) {
+    try {
+      this.reportarProgresso('Processando oferta...')
+      await this.peerConnection.setRemoteDescription(offer)
+      
+      const answer = await this.peerConnection.createAnswer()
+      await this.peerConnection.setLocalDescription(answer)
+      
+      this.enviarSinal('answer', answer)
+      
+    } catch (error) {
+      console.error('❌ Erro ao criar resposta:', error)
+      if (this.callbacks.onError) {
+        this.callbacks.onError('Erro ao criar resposta: ' + error.message)
+      }
+    }
+  }
+
+  async processarResposta(answer) {
+    try {
+      this.reportarProgresso('Processando resposta...')
+      await this.peerConnection.setRemoteDescription(answer)
+      
+    } catch (error) {
+      console.error('❌ Erro ao processar resposta:', error)
+      if (this.callbacks.onError) {
+        this.callbacks.onError('Erro ao processar resposta: ' + error.message)
+      }
+    }
+  }
+
+  async adicionarIceCandidate(candidate) {
+    try {
+      if (this.peerConnection.remoteDescription) {
+        await this.peerConnection.addIceCandidate(candidate)
+      } else {
+        // Guardar candidate para adicionar depois
+        this.iceCandidates.push(candidate)
+      }
+    } catch (error) {
+      console.error('❌ Erro ao adicionar ICE candidate:', error)
+    }
+  }
+
+  async processarCandidatesEnFileirados() {
+    for (const candidate of this.iceCandidates) {
+      try {
+        await this.peerConnection.addIceCandidate(candidate)
+      } catch (error) {
+        console.error('❌ Erro ao adicionar candidate enfileirado:', error)
+      }
+    }
+    this.iceCandidates = []
+  }
+
+  enviarSinal(tipo, dados) {
+    socketService.emitirSinalWebRTC({
+      atendimentoId: this.atendimentoId,
+      signal: {
+        type: tipo,
+        data: dados
+      },
+      tipo: tipo,
+      timestamp: Date.now()
+    })
+  }
+
+  async processarSinal(sinalData) {
+    if (!this.peerConnection || !sinalData.signal) {
+      console.warn('⚠️ Sinal recebido mas peer não disponível')
+      return
     }
 
-    return errorMap[error.code] || `Erro de conexão: ${error.message}`
+    console.log('📨 Processando sinal:', sinalData.tipo)
+    this.reportarProgresso(`Processando ${sinalData.tipo}...`)
+    
+    try {
+      const { type, data } = sinalData.signal
+
+      switch (type) {
+        case 'offer':
+          await this.criarResposta(data)
+          await this.processarCandidatesEnFileirados()
+          break
+          
+        case 'answer':
+          await this.processarResposta(data)
+          await this.processarCandidatesEnFileirados()
+          break
+          
+        case 'ice-candidate':
+          await this.adicionarIceCandidate(data)
+          break
+          
+        default:
+          console.warn('⚠️ Tipo de sinal desconhecido:', type)
+      }
+    } catch (error) {
+      console.error('❌ Erro ao processar sinal:', error)
+      if (this.callbacks.onError) {
+        this.callbacks.onError('Erro ao processar sinal: ' + error.message)
+      }
+    }
+  }
+
+  escutarSinais() {
+    socketService.escutarSinalWebRTC((sinalData) => {
+      if (sinalData.atendimentoId === this.atendimentoId) {
+        this.processarSinal(sinalData)
+      }
+    })
+  }
+
+  async forcarReconexao() {
+    console.log('🔄 Iniciando reconexão...')
+    
+    try {
+      if (this.peerConnection) {
+        this.peerConnection.close()
+        this.peerConnection = null
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 2000))
+      await this.testarConectividade()
+      await this.criarPeer(this.isInitiator, this.atendimentoId)
+
+      console.log('✅ Reconexão iniciada')
+      
+    } catch (error) {
+      console.error('❌ Falha na reconexão:', error)
+      throw error
+    }
   }
 
   handleConnectionTimeout() {
@@ -324,54 +428,6 @@ class WebRTCService {
     
     if (this.callbacks.onError) {
       this.callbacks.onError(mensagem)
-    }
-  }
-
-  processarSinal(sinalData) {
-    if (!this.peer || !sinalData.signal) {
-      console.warn('⚠️ Sinal recebido mas peer não disponível')
-      return
-    }
-
-    console.log('📨 Processando sinal:', sinalData.tipo)
-    this.reportarProgresso(`Processando ${sinalData.tipo}...`)
-    
-    try {
-      this.peer.signal(sinalData.signal)
-    } catch (error) {
-      console.error('❌ Erro ao processar sinal:', error)
-      if (this.callbacks.onError) {
-        this.callbacks.onError('Erro ao processar sinal: ' + error.message)
-      }
-    }
-  }
-
-  escutarSinais() {
-    socketService.escutarSinalWebRTC((sinalData) => {
-      if (sinalData.atendimentoId === this.atendimentoId) {
-        this.processarSinal(sinalData)
-      }
-    })
-  }
-
-  async forcarReconexao() {
-    console.log('🔄 Iniciando reconexão...')
-    
-    try {
-      if (this.peer) {
-        this.peer.destroy()
-        this.peer = null
-      }
-
-      await new Promise(resolve => setTimeout(resolve, 2000))
-      await this.testarConectividade()
-      await this.criarPeer(this.isInitiator, this.atendimentoId)
-
-      console.log('✅ Reconexão iniciada')
-      
-    } catch (error) {
-      console.error('❌ Falha na reconexão:', error)
-      throw error
     }
   }
 
@@ -425,9 +481,9 @@ class WebRTCService {
     
     this.clearConnectionTimeout()
     
-    if (this.peer) {
-      this.peer.destroy()
-      this.peer = null
+    if (this.peerConnection) {
+      this.peerConnection.close()
+      this.peerConnection = null
     }
 
     if (this.localStream) {
@@ -437,6 +493,7 @@ class WebRTCService {
 
     this.remoteStream = null
     this.atendimentoId = null
+    this.iceCandidates = []
     
     socketService.removerListener('sinal_webrtc')
   }
@@ -446,10 +503,10 @@ class WebRTCService {
   }
 
   obterStatusConexao() {
-    if (!this.peer) return 'desconectado'
+    if (!this.peerConnection) return 'desconectado'
     
-    const connectionState = this.peer.connectionState || this.peer._pc?.connectionState
-    const iceConnectionState = this.peer.iceConnectionState || this.peer._pc?.iceConnectionState
+    const connectionState = this.peerConnection.connectionState
+    const iceConnectionState = this.peerConnection.iceConnectionState
     
     if (connectionState === 'connected' || iceConnectionState === 'connected') {
       return 'conectado'
@@ -464,12 +521,13 @@ class WebRTCService {
   obterDiagnosticoRapido() {
     return {
       online: navigator.onLine,
-      peerExists: !!this.peer,
-      peerConnected: this.peer?.connected,
-      connectionState: this.peer?.connectionState || this.peer?._pc?.connectionState,
-      iceConnectionState: this.peer?.iceConnectionState || this.peer?._pc?.iceConnectionState,
+      peerExists: !!this.peerConnection,
+      peerState: this.peerConnection?.connectionState,
+      iceState: this.peerConnection?.iceConnectionState,
       localStream: !!this.localStream,
-      remoteStream: !!this.remoteStream
+      remoteStream: !!this.remoteStream,
+      isInitiator: this.isInitiator,
+      atendimentoId: this.atendimentoId
     }
   }
 }
