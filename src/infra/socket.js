@@ -9,7 +9,7 @@ class SocketService {
   connect(userId, userType) {
     if (this.socket?.connected) return
 
-    this.socket = io('ws://localhost:3001', {
+    this.socket = io('https://telemedicne-server.onrender.com', {
       query: { userId, userType },
       transports: ['websocket'],
       autoConnect: true
