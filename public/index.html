@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#3B82F6" />
+    <meta name="description" content="Plataforma de Teleatendimento Médico" />
+    
+    <!-- 🎨 TAILWIND CSS VIA CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              primary: '#3B82F6',
+              secondary: '#64748B'
+            },
+            animation: {
+              'spin-slow': 'spin 3s linear infinite',
+              'pulse-slow': 'pulse 3s ease-in-out infinite',
+            }
+          }
+        }
+      }
+    </script>
+    
+    <title>Teleatendimento</title>
+  </head>
+  <body>
+    <noscript>Você precisa habilitar JavaScript para usar esta aplicação.</noscript>
+    <div id="root"></div>
+  </body>
+</html>
