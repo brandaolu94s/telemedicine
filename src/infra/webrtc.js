@@ -1,4 +1,3 @@
-// 📁 /src/infra/webrtc.js (VERSÃO NATIVA SEM SIMPLE-PEER)
 import { socketService } from './socket'
 
 class WebRTCService {
