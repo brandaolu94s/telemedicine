@@ -210,8 +210,8 @@ export const PRODUCTION_CONFIG = {
   // AMBIENTE DE PRODUÇÃO
   environment: {
     // URLs dos serviços
-    websocketUrl: process.env.REACT_APP_WS_URL || 'wss://api.teleatendimento.com/ws',
-    apiUrl: process.env.REACT_APP_API_URL || 'https://api.teleatendimento.com',
+    websocketUrl: process.env.REACT_APP_WS_URL || 'https://telemedicne-server.onrender.com',
+    apiUrl: process.env.REACT_APP_API_URL || 'https://telemedicne-server.onrender.com',
     
     // Configurações de segurança
     enableLogging: process.env.NODE_ENV !== 'production',
