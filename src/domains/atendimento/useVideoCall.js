@@ -8,134 +8,122 @@ export const useVideoCall = (atendimentoId, isInitiator = false) => {
   const { usuario } = useAuth()
   const [chamadaAtiva, setChamadaAtiva] = useState(false)
   const [conectado, setConectado] = useState(false)
-  const [conectandoMidia, setConectandoMidia] = useState(false)
   const [microfoneAtivo, setMicrofoneAtivo] = useState(true)
   const [videoAtivo, setVideoAtivo] = useState(true)
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState(null)
-  const [debugInfo, setDebugInfo] = useState('')
   
   const localVideoRef = useRef(null)
   const remoteVideoRef = useRef(null)
 
-  const atualizarDebug = (mensagem) => {
-    const timestamp = new Date().toLocaleTimeString()
-    setDebugInfo(prev => `${timestamp}: ${mensagem}\n${prev}`)
-    console.log(`[VideoCall] ${mensagem}`)
-  }
-
   const iniciarChamada = async () => {
     if (!atendimentoId) {
-      atualizarDebug('❌ Erro: atendimentoId não fornecido')
+      setErro('ID do atendimento não fornecido')
       return
     }
 
     try {
       setCarregando(true)
       setErro(null)
-      atualizarDebug(`🚀 Iniciando chamada (${isInitiator ? 'Médico' : 'Paciente'})`)
 
-      // Verificar suporte a WebRTC
-      if (!webrtcService.constructor.verificarSuporteWebRTC()) {
-        throw new Error('Seu dispositivo não suporta videochamadas')
+      console.log('🚀 Iniciando chamada...', { atendimentoId, isInitiator })
+
+      // Verificar suporte ao WebRTC
+      const suporte = webrtcService.verificarSuporteWebRTC()
+      if (!suporte.supported) {
+        throw new Error('Seu navegador não suporta videochamadas. Use Chrome, Firefox ou Safari.')
       }
-
-      // Verificar conexão WebSocket
-      if (!socketService.estaConectado()) {
-        atualizarDebug('❌ WebSocket não conectado')
-        throw new Error('Conexão com servidor perdida. Recarregue a página.')
-      }
-
-      atualizarDebug('📡 Socket status: ' + JSON.stringify(socketService.obterStatusConexao()))
 
       // Configurar callbacks
       webrtcService.setCallbacks({
         onLocalStream: (stream) => {
-          atualizarDebug('📹 Stream local obtido')
+          console.log('📹 Stream local recebido')
           if (localVideoRef.current) {
             localVideoRef.current.srcObject = stream
-            localVideoRef.current.play().catch(e => 
-              atualizarDebug('❌ Erro ao reproduzir vídeo local: ' + e.message)
-            )
           }
         },
         onRemoteStream: (stream) => {
-          atualizarDebug('📺 Stream remoto recebido')
+          console.log('📺 Stream remoto recebido')
           if (remoteVideoRef.current) {
             remoteVideoRef.current.srcObject = stream
-            remoteVideoRef.current.play().catch(e => 
-              atualizarDebug('❌ Erro ao reproduzir vídeo remoto: ' + e.message)
-            )
           }
         },
         onConnect: () => {
-          atualizarDebug('✅ Conexão P2P estabelecida')
+          console.log('✅ Conectado!')
           setConectado(true)
           setCarregando(false)
         },
         onError: (errorMsg) => {
-          atualizarDebug('❌ Erro WebRTC: ' + errorMsg)
+          console.error('❌ Erro WebRTC:', errorMsg)
           setErro(errorMsg)
           setCarregando(false)
         },
         onClose: () => {
-          atualizarDebug('📴 Conexão P2P fechada')
+          console.log('📞 Chamada finalizada')
           finalizarChamadaLocal()
         }
       })
 
-      // Inicializar mídia
-      setConectandoMidia(true)
-      atualizarDebug('🎥 Solicitando acesso à mídia...')
+      // Inicializar mídia primeiro
       await webrtcService.inicializarMidia()
-      setConectandoMidia(false)
+      console.log('🎥 Mídia inicializada')
       
       // Criar peer
-      atualizarDebug('🔗 Criando peer connection...')
       webrtcService.criarPeer(isInitiator, atendimentoId)
+      console.log('🔗 Peer criado')
       
       setChamadaAtiva(true)
-      atualizarDebug('✅ Chamada iniciada com sucesso')
       
-      // Escutar finalização de chamada
+      // Escutar finalização de chamada via WebSocket
       socketService.escutarFinalizarChamada((dados) => {
         if (dados.atendimentoId === atendimentoId) {
-          atualizarDebug('📞 Chamada finalizada pelo outro participante')
+          console.log('📞 Chamada finalizada remotamente')
           finalizarChamadaLocal()
         }
       })
 
     } catch (error) {
-      atualizarDebug('💥 Erro ao iniciar chamada: ' + error.message)
-      setErro('Erro ao iniciar chamada: ' + error.message)
+      console.error('❌ Erro ao iniciar chamada:', error)
+      setErro(error.message)
       setCarregando(false)
-      setConectandoMidia(false)
     }
   }
 
   const alternarMicrofone = () => {
-    const novoEstado = webrtcService.alternarMicrofone()
-    setMicrofoneAtivo(novoEstado)
-    atualizarDebug(`🎤 Microfone ${novoEstado ? 'ativado' : 'desativado'}`)
-    return novoEstado
+    try {
+      const novoEstado = webrtcService.alternarMicrofone()
+      setMicrofoneAtivo(novoEstado)
+      console.log('🎤 Microfone:', novoEstado ? 'ON' : 'OFF')
+      return novoEstado
+    } catch (error) {
+      console.error('Erro ao alternar microfone:', error)
+      return microfoneAtivo
+    }
   }
 
   const alternarVideo = () => {
-    const novoEstado = webrtcService.alternarVideo()
-    setVideoAtivo(novoEstado)
-    atualizarDebug(`📹 Vídeo ${novoEstado ? 'ativado' : 'desativado'}`)
-    return novoEstado
+    try {
+      const novoEstado = webrtcService.alternarVideo()
+      setVideoAtivo(novoEstado)
+      console.log('📹 Vídeo:', novoEstado ? 'ON' : 'OFF')
+      return novoEstado
+    } catch (error) {
+      console.error('Erro ao alternar vídeo:', error)
+      return videoAtivo
+    }
   }
 
   const finalizarChamadaLocal = () => {
-    atualizarDebug('🛑 Finalizando chamada local...')
+    console.log('🔚 Finalizando chamada local...')
+    
     setChamadaAtiva(false)
     setConectado(false)
     setCarregando(false)
-    setConectandoMidia(false)
     setMicrofoneAtivo(true)
     setVideoAtivo(true)
+    setErro(null)
     
+    // Limpar vídeos
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = null
     }
@@ -143,17 +131,19 @@ export const useVideoCall = (atendimentoId, isInitiator = false) => {
       remoteVideoRef.current.srcObject = null
     }
     
+    // Limpar WebRTC
     webrtcService.limparConexao()
   }
 
   const encerrarAtendimento = async () => {
     try {
       setCarregando(true)
-      atualizarDebug('📝 Finalizando atendimento no servidor...')
+      console.log('🏁 Encerrando atendimento...')
       
-      // Finalizar no backend
+      // Finalizar no backend (só médico pode finalizar)
       if (usuario?.profile?.tipo === 'medico') {
         await finalizarAtendimento(atendimentoId, usuario.profile.id)
+        console.log('✅ Atendimento finalizado no backend')
       }
       
       // Finalizar chamada
@@ -161,30 +151,44 @@ export const useVideoCall = (atendimentoId, isInitiator = false) => {
       finalizarChamadaLocal()
       
     } catch (error) {
-      atualizarDebug('❌ Erro ao finalizar atendimento: ' + error.message)
+      console.error('❌ Erro ao finalizar atendimento:', error)
       setErro('Erro ao finalizar atendimento: ' + error.message)
+      
+      // Mesmo com erro, finalizar a chamada localmente
+      finalizarChamadaLocal()
     } finally {
       setCarregando(false)
     }
   }
 
+  // Cleanup quando componente desmonta
   useEffect(() => {
     return () => {
-      atualizarDebug('🧹 Cleanup do componente')
+      console.log('🧹 Cleanup useVideoCall')
       finalizarChamadaLocal()
       socketService.removerListener('finalizar_chamada')
     }
   }, [])
 
+  // Debug: log do status da conexão
+  useEffect(() => {
+    if (chamadaAtiva) {
+      const interval = setInterval(() => {
+        const status = webrtcService.obterStatusConexao()
+        console.log('📊 Status conexão:', status)
+      }, 5000)
+
+      return () => clearInterval(interval)
+    }
+  }, [chamadaAtiva])
+
   return {
     chamadaAtiva,
     conectado,
-    conectandoMidia,
     microfoneAtivo,
     videoAtivo,
     carregando,
     erro,
-    debugInfo,
     localVideoRef,
     remoteVideoRef,
     iniciarChamada,
