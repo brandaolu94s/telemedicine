@@ -12,69 +12,80 @@ export const useVideoCall = (atendimentoId, isInitiator = false) => {
   const [videoAtivo, setVideoAtivo] = useState(true)
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState(null)
+  const [progresso, setProgresso] = useState('')
+  const [tentativasReconexao, setTentativasReconexao] = useState(0)
   
   const localVideoRef = useRef(null)
   const remoteVideoRef = useRef(null)
 
   const iniciarChamada = async () => {
     if (!atendimentoId) {
-      setErro('ID do atendimento não fornecido')
+      setErro('ID do atendimento é obrigatório')
       return
     }
 
     try {
       setCarregando(true)
       setErro(null)
+      setProgresso('Verificando sistema...')
+      setTentativasReconexao(0)
 
       console.log('🚀 Iniciando chamada...', { atendimentoId, isInitiator })
 
-      // Verificar suporte ao WebRTC
       const suporte = webrtcService.verificarSuporteWebRTC()
       if (!suporte.supported) {
         throw new Error('Seu navegador não suporta videochamadas. Use Chrome, Firefox ou Safari.')
       }
 
-      // Configurar callbacks
       webrtcService.setCallbacks({
         onLocalStream: (stream) => {
           console.log('📹 Stream local recebido')
           if (localVideoRef.current) {
             localVideoRef.current.srcObject = stream
+            localVideoRef.current.play().catch(e => console.warn('Autoplay local bloqueado:', e))
           }
         },
+        
         onRemoteStream: (stream) => {
           console.log('📺 Stream remoto recebido')
           if (remoteVideoRef.current) {
             remoteVideoRef.current.srcObject = stream
+            remoteVideoRef.current.play().catch(e => console.warn('Autoplay remoto bloqueado:', e))
           }
         },
+        
         onConnect: () => {
-          console.log('✅ Conectado!')
+          console.log('✅ Conectado com sucesso!')
           setConectado(true)
           setCarregando(false)
+          setProgresso('Conectado!')
         },
+        
         onError: (errorMsg) => {
           console.error('❌ Erro WebRTC:', errorMsg)
           setErro(errorMsg)
           setCarregando(false)
+          setProgresso('')
         },
+        
         onClose: () => {
-          console.log('📞 Chamada finalizada')
+          console.log('📞 Chamada encerrada')
           finalizarChamadaLocal()
+        },
+        
+        onProgress: (mensagem) => {
+          setProgresso(mensagem)
         }
       })
 
-      // Inicializar mídia primeiro
       await webrtcService.inicializarMidia()
       console.log('🎥 Mídia inicializada')
       
-      // Criar peer
       webrtcService.criarPeer(isInitiator, atendimentoId)
       console.log('🔗 Peer criado')
       
       setChamadaAtiva(true)
       
-      // Escutar finalização de chamada via WebSocket
       socketService.escutarFinalizarChamada((dados) => {
         if (dados.atendimentoId === atendimentoId) {
           console.log('📞 Chamada finalizada remotamente')
@@ -85,6 +96,30 @@ export const useVideoCall = (atendimentoId, isInitiator = false) => {
     } catch (error) {
       console.error('❌ Erro ao iniciar chamada:', error)
       setErro(error.message)
+      setCarregando(false)
+      setProgresso('')
+    }
+  }
+
+  const tentarReconexao = async () => {
+    if (tentativasReconexao >= 2) {
+      setErro('Conexão instável. Entre em contato com suporte técnico.')
+      return
+    }
+
+    try {
+      setTentativasReconexao(prev => prev + 1)
+      setCarregando(true)
+      setErro(null)
+      setProgresso(`Reconectando (${tentativasReconexao + 1}/2)...`)
+      
+      console.log(`🔄 Reconexão ${tentativasReconexao + 1}`)
+      
+      await webrtcService.forcarReconexao()
+      
+    } catch (error) {
+      console.error('❌ Reconexão falhou:', error)
+      setErro('Falha na reconexão: ' + error.message)
       setCarregando(false)
     }
   }
@@ -114,7 +149,7 @@ export const useVideoCall = (atendimentoId, isInitiator = false) => {
   }
 
   const finalizarChamadaLocal = () => {
-    console.log('🔚 Finalizando chamada local...')
+    console.log('🔚 Finalizando chamada local')
     
     setChamadaAtiva(false)
     setConectado(false)
@@ -122,8 +157,9 @@ export const useVideoCall = (atendimentoId, isInitiator = false) => {
     setMicrofoneAtivo(true)
     setVideoAtivo(true)
     setErro(null)
+    setProgresso('')
+    setTentativasReconexao(0)
     
-    // Limpar vídeos
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = null
     }
@@ -131,56 +167,37 @@ export const useVideoCall = (atendimentoId, isInitiator = false) => {
       remoteVideoRef.current.srcObject = null
     }
     
-    // Limpar WebRTC
     webrtcService.limparConexao()
   }
 
   const encerrarAtendimento = async () => {
     try {
-      setCarregando(true)
-      console.log('🏁 Encerrando atendimento...')
+      console.log('🏁 Encerrando atendimento')
       
-      // Finalizar no backend (só médico pode finalizar)
+      setCarregando(true)
+      setProgresso('Finalizando...')
+      
       if (usuario?.profile?.tipo === 'medico') {
         await finalizarAtendimento(atendimentoId, usuario.profile.id)
-        console.log('✅ Atendimento finalizado no backend')
+        console.log('✅ Finalizado no backend')
       }
       
-      // Finalizar chamada
       webrtcService.finalizarChamada()
       finalizarChamadaLocal()
       
     } catch (error) {
-      console.error('❌ Erro ao finalizar atendimento:', error)
-      setErro('Erro ao finalizar atendimento: ' + error.message)
-      
-      // Mesmo com erro, finalizar a chamada localmente
+      console.error('❌ Erro ao finalizar', error)
       finalizarChamadaLocal()
-    } finally {
-      setCarregando(false)
     }
   }
 
-  // Cleanup quando componente desmonta
   useEffect(() => {
     return () => {
-      console.log('🧹 Cleanup useVideoCall')
+      console.log('🧹 Cleanup automático')
       finalizarChamadaLocal()
       socketService.removerListener('finalizar_chamada')
     }
   }, [])
-
-  // Debug: log do status da conexão
-  useEffect(() => {
-    if (chamadaAtiva) {
-      const interval = setInterval(() => {
-        const status = webrtcService.obterStatusConexao()
-        console.log('📊 Status conexão:', status)
-      }, 5000)
-
-      return () => clearInterval(interval)
-    }
-  }, [chamadaAtiva])
 
   return {
     chamadaAtiva,
@@ -189,12 +206,16 @@ export const useVideoCall = (atendimentoId, isInitiator = false) => {
     videoAtivo,
     carregando,
     erro,
+    progresso,
+    tentativasReconexao,
     localVideoRef,
     remoteVideoRef,
     iniciarChamada,
+    tentarReconexao,
     alternarMicrofone,
     alternarVideo,
     encerrarAtendimento,
-    finalizarChamadaLocal
+    finalizarChamadaLocal,
+    podeReconectar: tentativasReconexao < 2 && erro && !conectado
   }
 }
